@@ -1,11 +1,14 @@
 import { useState, useRef, useEffect } from 'react';
 import { minecraftBlocks, blockCategories, type MinecraftBlock } from '@/data/minecraftBlocks';
+import { blockTextureUrls } from '@/data/minecraftBlockTextures';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card } from '@/components/ui/card';
+import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import Icon from '@/components/ui/icon';
 import { toast } from 'sonner';
+import { useMediaQuery } from '@/hooks/use-media-query';
 
 const CANVAS_WIDTH = 64;
 const CANVAS_HEIGHT = 48;
@@ -29,11 +32,38 @@ export default function MinecraftEditor() {
   const [zoom, setZoom] = useState(1);
   const [showGrid, setShowGrid] = useState(true);
   const [activeTab, setActiveTab] = useState('editor');
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const textureCache = useRef<Map<string, HTMLImageElement>>(new Map());
+  const isMobile = useMediaQuery('(max-width: 768px)');
+
+  useEffect(() => {
+    preloadTextures();
+  }, []);
 
   useEffect(() => {
     drawCanvas();
   }, [grid, zoom, showGrid]);
+
+  useEffect(() => {
+    if (isMobile) {
+      setZoom(0.75);
+    }
+  }, [isMobile]);
+
+  const preloadTextures = () => {
+    Object.entries(blockTextureUrls).forEach(([blockId, url]) => {
+      if (url && !textureCache.current.has(blockId)) {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.src = url;
+        img.onload = () => {
+          textureCache.current.set(blockId, img);
+          drawCanvas();
+        };
+      }
+    });
+  };
 
   const drawCanvas = () => {
     const canvas = canvasRef.current;
@@ -53,13 +83,25 @@ export default function MinecraftEditor() {
         const block = minecraftBlocks.find(b => b.id === cell.blockId);
         
         if (block && block.color !== 'transparent') {
-          ctx.fillStyle = block.color;
-          ctx.fillRect(
-            x * CELL_SIZE * zoom,
-            y * CELL_SIZE * zoom,
-            CELL_SIZE * zoom,
-            CELL_SIZE * zoom
-          );
+          const texture = textureCache.current.get(cell.blockId);
+          if (texture && texture.complete) {
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(
+              texture,
+              x * CELL_SIZE * zoom,
+              y * CELL_SIZE * zoom,
+              CELL_SIZE * zoom,
+              CELL_SIZE * zoom
+            );
+          } else {
+            ctx.fillStyle = block.color;
+            ctx.fillRect(
+              x * CELL_SIZE * zoom,
+              y * CELL_SIZE * zoom,
+              CELL_SIZE * zoom,
+              CELL_SIZE * zoom
+            );
+          }
         }
       }
     }
@@ -82,13 +124,32 @@ export default function MinecraftEditor() {
     }
   };
 
-  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const getCanvasCoordinates = (clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) return null;
 
     const rect = canvas.getBoundingClientRect();
-    const x = Math.floor((e.clientX - rect.left) / (CELL_SIZE * zoom));
-    const y = Math.floor((e.clientY - rect.top) / (CELL_SIZE * zoom));
+    const x = Math.floor((clientX - rect.left) / (CELL_SIZE * zoom));
+    const y = Math.floor((clientY - rect.top) / (CELL_SIZE * zoom));
+    return { x, y };
+  };
+
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    let clientX: number, clientY: number;
+
+    if ('touches' in e) {
+      if (e.touches.length === 0) return;
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else {
+      clientX = e.clientX;
+      clientY = e.clientY;
+    }
+
+    const coords = getCanvasCoordinates(clientX, clientY);
+    if (!coords) return;
+    const { x, y } = coords;
 
     if (x < 0 || x >= CANVAS_WIDTH || y < 0 || y >= CANVAS_HEIGHT) return;
 
@@ -148,6 +209,20 @@ export default function MinecraftEditor() {
     setIsDrawing(false);
   };
 
+  const handleTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    setIsDrawing(true);
+    handleCanvasClick(e);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    if (!isDrawing || tool === 'fill') return;
+    handleCanvasClick(e);
+  };
+
+  const handleTouchEnd = () => {
+    setIsDrawing(false);
+  };
+
   const clearCanvas = () => {
     setGrid(
       Array(CANVAS_HEIGHT).fill(null).map(() =>
@@ -185,150 +260,203 @@ export default function MinecraftEditor() {
     toast.success('Шаблон загружен');
   };
 
-  return (
-    <div className="min-h-screen bg-background flex">
-      <div className="w-64 border-r border-border bg-card flex flex-col">
-        <div className="p-4 border-b border-border">
-          <h1 className="text-2xl font-bold text-primary flex items-center gap-2">
-            ⛏️ Minecraft 2D
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">Редактор конструкций</p>
+  const SidebarContent = () => (
+    <>
+      <div className="p-4 border-b border-border">
+        <h1 className="text-2xl font-bold text-primary flex items-center gap-2">
+          ⛏️ Minecraft 2D
+        </h1>
+        <p className="text-sm text-muted-foreground mt-1">Редактор конструкций</p>
+      </div>
+
+      <div className="p-3 border-b border-border space-y-2">
+        <div className="flex gap-2">
+          <Button
+            variant={tool === 'brush' ? 'default' : 'outline'}
+            size="sm"
+            className="flex-1"
+            onClick={() => { setTool('brush'); if (isMobile) setIsMobileMenuOpen(false); }}
+          >
+            <Icon name="Brush" size={16} />
+          </Button>
+          <Button
+            variant={tool === 'eraser' ? 'default' : 'outline'}
+            size="sm"
+            className="flex-1"
+            onClick={() => { setTool('eraser'); if (isMobile) setIsMobileMenuOpen(false); }}
+          >
+            <Icon name="Eraser" size={16} />
+          </Button>
+          <Button
+            variant={tool === 'fill' ? 'default' : 'outline'}
+            size="sm"
+            className="flex-1"
+            onClick={() => { setTool('fill'); if (isMobile) setIsMobileMenuOpen(false); }}
+          >
+            <Icon name="PaintBucket" size={16} />
+          </Button>
         </div>
 
-        <div className="p-3 border-b border-border space-y-2">
-          <div className="flex gap-2">
-            <Button
-              variant={tool === 'brush' ? 'default' : 'outline'}
-              size="sm"
-              className="flex-1"
-              onClick={() => setTool('brush')}
-            >
-              <Icon name="Brush" size={16} />
-            </Button>
-            <Button
-              variant={tool === 'eraser' ? 'default' : 'outline'}
-              size="sm"
-              className="flex-1"
-              onClick={() => setTool('eraser')}
-            >
-              <Icon name="Eraser" size={16} />
-            </Button>
-            <Button
-              variant={tool === 'fill' ? 'default' : 'outline'}
-              size="sm"
-              className="flex-1"
-              onClick={() => setTool('fill')}
-            >
-              <Icon name="PaintBucket" size={16} />
-            </Button>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setZoom(Math.max(0.5, zoom - 0.25))}
-            >
-              <Icon name="ZoomOut" size={16} />
-            </Button>
-            <span className="text-sm flex-1 text-center">{Math.round(zoom * 100)}%</span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setZoom(Math.min(3, zoom + 0.25))}
-            >
-              <Icon name="ZoomIn" size={16} />
-            </Button>
-          </div>
-
+        <div className="flex items-center gap-2">
           <Button
             variant="outline"
             size="sm"
-            className="w-full"
-            onClick={() => setShowGrid(!showGrid)}
+            onClick={() => setZoom(Math.max(0.5, zoom - 0.25))}
           >
-            <Icon name="Grid3x3" size={16} />
-            <span className="ml-2">{showGrid ? 'Скрыть' : 'Показать'} сетку</span>
+            <Icon name="ZoomOut" size={16} />
           </Button>
-
-          <Button variant="destructive" size="sm" className="w-full" onClick={clearCanvas}>
-            <Icon name="Trash2" size={16} />
-            <span className="ml-2">Очистить</span>
+          <span className="text-sm flex-1 text-center">{Math.round(zoom * 100)}%</span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setZoom(Math.min(3, zoom + 0.25))}
+          >
+            <Icon name="ZoomIn" size={16} />
           </Button>
         </div>
 
-        <ScrollArea className="flex-1 p-3">
-          <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground mb-2">Выбранный блок:</p>
-            <div className="p-2 bg-background rounded border border-border flex items-center gap-2 mb-3">
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full"
+          onClick={() => setShowGrid(!showGrid)}
+        >
+          <Icon name="Grid3x3" size={16} />
+          <span className="ml-2">{showGrid ? 'Скрыть' : 'Показать'} сетку</span>
+        </Button>
+
+        <Button variant="destructive" size="sm" className="w-full" onClick={clearCanvas}>
+          <Icon name="Trash2" size={16} />
+          <span className="ml-2">Очистить</span>
+        </Button>
+      </div>
+
+      <ScrollArea className="flex-1 p-3">
+        <div className="space-y-1">
+          <p className="text-xs font-medium text-muted-foreground mb-2">Выбранный блок:</p>
+          <div className="p-2 bg-background rounded border border-border flex items-center gap-2 mb-3">
+            {blockTextureUrls[selectedBlock.id] && textureCache.current.get(selectedBlock.id) ? (
+              <img
+                src={blockTextureUrls[selectedBlock.id]}
+                alt={selectedBlock.name}
+                className="w-8 h-8 rounded border border-border pixel-canvas"
+              />
+            ) : (
               <div
                 className="w-8 h-8 rounded border border-border"
                 style={{ backgroundColor: selectedBlock.color }}
               />
-              <span className="text-sm">{selectedBlock.name}</span>
-            </div>
+            )}
+            <span className="text-sm">{selectedBlock.name}</span>
+          </div>
 
-            <Tabs defaultValue={blockCategories[0]}>
-              <TabsList className="w-full grid grid-cols-2 h-auto gap-1">
-                {blockCategories.slice(0, 8).map(cat => (
-                  <TabsTrigger key={cat} value={cat} className="text-xs px-1 py-1">
-                    {cat}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
+          <Tabs defaultValue={blockCategories[0]}>
+            <TabsList className="w-full grid grid-cols-2 h-auto gap-1">
+              {blockCategories.slice(0, 8).map(cat => (
+                <TabsTrigger key={cat} value={cat} className="text-xs px-1 py-1">
+                  {cat}
+                </TabsTrigger>
+              ))}
+            </TabsList>
 
-              {blockCategories.map(category => (
-                <TabsContent key={category} value={category} className="mt-2">
-                  <div className="grid grid-cols-4 gap-1">
-                    {minecraftBlocks
-                      .filter(block => block.category === category)
-                      .map(block => (
+            {blockCategories.map(category => (
+              <TabsContent key={category} value={category} className="mt-2">
+                <div className="grid grid-cols-4 gap-1">
+                  {minecraftBlocks
+                    .filter(block => block.category === category)
+                    .map(block => {
+                      const textureUrl = blockTextureUrls[block.id];
+                      const hasTexture = textureUrl && textureCache.current.get(block.id);
+                      
+                      return (
                         <button
                           key={block.id}
-                          onClick={() => setSelectedBlock(block)}
-                          className={`w-full aspect-square rounded border-2 transition-all hover:scale-110 ${
+                          onClick={() => { setSelectedBlock(block); if (isMobile) setIsMobileMenuOpen(false); }}
+                          className={`w-full aspect-square rounded border-2 transition-all hover:scale-110 overflow-hidden ${
                             selectedBlock.id === block.id
                               ? 'border-primary ring-2 ring-primary'
                               : 'border-border'
                           }`}
-                          style={{ backgroundColor: block.color }}
+                          style={!hasTexture ? { backgroundColor: block.color } : {}}
                           title={block.name}
-                        />
-                      ))}
-                  </div>
-                </TabsContent>
-              ))}
-            </Tabs>
-          </div>
-        </ScrollArea>
-
-        <div className="p-3 border-t border-border space-y-2">
-          <Button className="w-full" onClick={exportToPNG}>
-            <Icon name="Download" size={16} />
-            <span className="ml-2">Экспорт PNG</span>
-          </Button>
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={() => setActiveTab(activeTab === 'editor' ? 'gallery' : 'editor')}
-          >
-            <Icon name="Images" size={16} />
-            <span className="ml-2">Галерея</span>
-          </Button>
+                        >
+                          {hasTexture && (
+                            <img
+                              src={textureUrl}
+                              alt={block.name}
+                              className="w-full h-full object-cover pixel-canvas"
+                            />
+                          )}
+                        </button>
+                      );
+                    })}
+                </div>
+              </TabsContent>
+            ))}
+          </Tabs>
         </div>
-      </div>
+      </ScrollArea>
 
-      <div className="flex-1 p-8 overflow-auto">
+      <div className="p-3 border-t border-border space-y-2">
+        <Button className="w-full" onClick={exportToPNG}>
+          <Icon name="Download" size={16} />
+          <span className="ml-2">Экспорт PNG</span>
+        </Button>
+        <Button
+          variant="outline"
+          className="w-full"
+          onClick={() => { setActiveTab(activeTab === 'editor' ? 'gallery' : 'editor'); if (isMobile) setIsMobileMenuOpen(false); }}
+        >
+          <Icon name="Images" size={16} />
+          <span className="ml-2">Галерея</span>
+        </Button>
+      </div>
+    </>
+  );
+
+  return (
+    <div className="min-h-screen bg-background flex flex-col md:flex-row">
+      {isMobile ? (
+        <>
+          <div className="sticky top-0 z-50 bg-card border-b border-border p-3 flex items-center justify-between">
+            <h1 className="text-xl font-bold text-primary flex items-center gap-2">
+              ⛏️ Minecraft 2D
+            </h1>
+            <Sheet open={isMobileMenuOpen} onOpenChange={setIsMobileMenuOpen}>
+              <SheetTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <Icon name="Menu" size={20} />
+                </Button>
+              </SheetTrigger>
+              <SheetContent side="left" className="w-80 p-0">
+                <div className="flex flex-col h-full">
+                  <SidebarContent />
+                </div>
+              </SheetContent>
+            </Sheet>
+          </div>
+        </>
+      ) : (
+        <div className="w-64 border-r border-border bg-card flex flex-col">
+          <SidebarContent />
+        </div>
+      )}
+
+
+      <div className="flex-1 p-2 md:p-8 overflow-auto">
         {activeTab === 'editor' ? (
           <div className="flex flex-col items-center justify-center min-h-full">
             <Card className="p-4 bg-muted">
               <canvas
                 ref={canvasRef}
-                className="pixel-canvas cursor-crosshair border border-border bg-background"
+                className="pixel-canvas cursor-crosshair border border-border bg-background touch-none"
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
                 onMouseLeave={handleMouseUp}
+                onTouchStart={handleTouchStart}
+                onTouchMove={handleTouchMove}
+                onTouchEnd={handleTouchEnd}
               />
             </Card>
             <div className="mt-4 text-center text-sm text-muted-foreground">
@@ -337,8 +465,8 @@ export default function MinecraftEditor() {
           </div>
         ) : (
           <div className="max-w-4xl mx-auto">
-            <h2 className="text-3xl font-bold mb-6">Галерея шаблонов</h2>
-            <div className="grid grid-cols-3 gap-4">
+            <h2 className="text-2xl md:text-3xl font-bold mb-6">Галерея шаблонов</h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {templates.map(template => (
                 <Card
                   key={template.name}
