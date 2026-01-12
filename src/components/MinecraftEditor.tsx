@@ -1,0 +1,449 @@
+import { useState, useRef, useEffect } from 'react';
+import { minecraftBlocks, blockCategories, type MinecraftBlock } from '@/data/minecraftBlocks';
+import { Button } from '@/components/ui/button';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Card } from '@/components/ui/card';
+import Icon from '@/components/ui/icon';
+import { toast } from 'sonner';
+
+const CANVAS_WIDTH = 64;
+const CANVAS_HEIGHT = 48;
+const CELL_SIZE = 16;
+
+type Tool = 'brush' | 'eraser' | 'fill';
+
+interface Cell {
+  blockId: string;
+}
+
+export default function MinecraftEditor() {
+  const [grid, setGrid] = useState<Cell[][]>(() =>
+    Array(CANVAS_HEIGHT).fill(null).map(() =>
+      Array(CANVAS_WIDTH).fill(null).map(() => ({ blockId: 'air' }))
+    )
+  );
+  const [selectedBlock, setSelectedBlock] = useState<MinecraftBlock>(minecraftBlocks[7]);
+  const [tool, setTool] = useState<Tool>('brush');
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [showGrid, setShowGrid] = useState(true);
+  const [activeTab, setActiveTab] = useState('editor');
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    drawCanvas();
+  }, [grid, zoom, showGrid]);
+
+  const drawCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    canvas.width = CANVAS_WIDTH * CELL_SIZE * zoom;
+    canvas.height = CANVAS_HEIGHT * CELL_SIZE * zoom;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    for (let y = 0; y < CANVAS_HEIGHT; y++) {
+      for (let x = 0; x < CANVAS_WIDTH; x++) {
+        const cell = grid[y][x];
+        const block = minecraftBlocks.find(b => b.id === cell.blockId);
+        
+        if (block && block.color !== 'transparent') {
+          ctx.fillStyle = block.color;
+          ctx.fillRect(
+            x * CELL_SIZE * zoom,
+            y * CELL_SIZE * zoom,
+            CELL_SIZE * zoom,
+            CELL_SIZE * zoom
+          );
+        }
+      }
+    }
+
+    if (showGrid) {
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x <= CANVAS_WIDTH; x++) {
+        ctx.beginPath();
+        ctx.moveTo(x * CELL_SIZE * zoom, 0);
+        ctx.lineTo(x * CELL_SIZE * zoom, CANVAS_HEIGHT * CELL_SIZE * zoom);
+        ctx.stroke();
+      }
+      for (let y = 0; y <= CANVAS_HEIGHT; y++) {
+        ctx.beginPath();
+        ctx.moveTo(0, y * CELL_SIZE * zoom);
+        ctx.lineTo(CANVAS_WIDTH * CELL_SIZE * zoom, y * CELL_SIZE * zoom);
+        ctx.stroke();
+      }
+    }
+  };
+
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left) / (CELL_SIZE * zoom));
+    const y = Math.floor((e.clientY - rect.top) / (CELL_SIZE * zoom));
+
+    if (x < 0 || x >= CANVAS_WIDTH || y < 0 || y >= CANVAS_HEIGHT) return;
+
+    if (tool === 'fill') {
+      floodFill(x, y);
+    } else {
+      paintCell(x, y);
+    }
+  };
+
+  const paintCell = (x: number, y: number) => {
+    setGrid(prev => {
+      const newGrid = prev.map(row => [...row]);
+      if (tool === 'brush') {
+        newGrid[y][x] = { blockId: selectedBlock.id };
+      } else if (tool === 'eraser') {
+        newGrid[y][x] = { blockId: 'air' };
+      }
+      return newGrid;
+    });
+  };
+
+  const floodFill = (startX: number, startY: number) => {
+    const targetBlockId = grid[startY][startX].blockId;
+    const replacementBlockId = tool === 'eraser' ? 'air' : selectedBlock.id;
+
+    if (targetBlockId === replacementBlockId) return;
+
+    const newGrid = grid.map(row => [...row]);
+    const stack: [number, number][] = [[startX, startY]];
+
+    while (stack.length > 0) {
+      const [x, y] = stack.pop()!;
+
+      if (x < 0 || x >= CANVAS_WIDTH || y < 0 || y >= CANVAS_HEIGHT) continue;
+      if (newGrid[y][x].blockId !== targetBlockId) continue;
+
+      newGrid[y][x] = { blockId: replacementBlockId };
+
+      stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
+    }
+
+    setGrid(newGrid);
+  };
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    setIsDrawing(true);
+    handleCanvasClick(e);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isDrawing || tool === 'fill') return;
+    handleCanvasClick(e);
+  };
+
+  const handleMouseUp = () => {
+    setIsDrawing(false);
+  };
+
+  const clearCanvas = () => {
+    setGrid(
+      Array(CANVAS_HEIGHT).fill(null).map(() =>
+        Array(CANVAS_WIDTH).fill(null).map(() => ({ blockId: 'air' }))
+      )
+    );
+    toast.success('Холст очищен');
+  };
+
+  const exportToPNG = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    canvas.toBlob(blob => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `minecraft-build-${Date.now()}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success('Изображение экспортировано');
+    });
+  };
+
+  const templates = [
+    { name: 'Дом', grid: generateHouseTemplate() },
+    { name: 'Дерево', grid: generateTreeTemplate() },
+    { name: 'Меч', grid: generateSwordTemplate() },
+  ];
+
+  const loadTemplate = (templateGrid: Cell[][]) => {
+    setGrid(templateGrid);
+    setActiveTab('editor');
+    toast.success('Шаблон загружен');
+  };
+
+  return (
+    <div className="min-h-screen bg-background flex">
+      <div className="w-64 border-r border-border bg-card flex flex-col">
+        <div className="p-4 border-b border-border">
+          <h1 className="text-2xl font-bold text-primary flex items-center gap-2">
+            ⛏️ Minecraft 2D
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1">Редактор конструкций</p>
+        </div>
+
+        <div className="p-3 border-b border-border space-y-2">
+          <div className="flex gap-2">
+            <Button
+              variant={tool === 'brush' ? 'default' : 'outline'}
+              size="sm"
+              className="flex-1"
+              onClick={() => setTool('brush')}
+            >
+              <Icon name="Brush" size={16} />
+            </Button>
+            <Button
+              variant={tool === 'eraser' ? 'default' : 'outline'}
+              size="sm"
+              className="flex-1"
+              onClick={() => setTool('eraser')}
+            >
+              <Icon name="Eraser" size={16} />
+            </Button>
+            <Button
+              variant={tool === 'fill' ? 'default' : 'outline'}
+              size="sm"
+              className="flex-1"
+              onClick={() => setTool('fill')}
+            >
+              <Icon name="PaintBucket" size={16} />
+            </Button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setZoom(Math.max(0.5, zoom - 0.25))}
+            >
+              <Icon name="ZoomOut" size={16} />
+            </Button>
+            <span className="text-sm flex-1 text-center">{Math.round(zoom * 100)}%</span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setZoom(Math.min(3, zoom + 0.25))}
+            >
+              <Icon name="ZoomIn" size={16} />
+            </Button>
+          </div>
+
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full"
+            onClick={() => setShowGrid(!showGrid)}
+          >
+            <Icon name="Grid3x3" size={16} />
+            <span className="ml-2">{showGrid ? 'Скрыть' : 'Показать'} сетку</span>
+          </Button>
+
+          <Button variant="destructive" size="sm" className="w-full" onClick={clearCanvas}>
+            <Icon name="Trash2" size={16} />
+            <span className="ml-2">Очистить</span>
+          </Button>
+        </div>
+
+        <ScrollArea className="flex-1 p-3">
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-muted-foreground mb-2">Выбранный блок:</p>
+            <div className="p-2 bg-background rounded border border-border flex items-center gap-2 mb-3">
+              <div
+                className="w-8 h-8 rounded border border-border"
+                style={{ backgroundColor: selectedBlock.color }}
+              />
+              <span className="text-sm">{selectedBlock.name}</span>
+            </div>
+
+            <Tabs defaultValue={blockCategories[0]}>
+              <TabsList className="w-full grid grid-cols-2 h-auto gap-1">
+                {blockCategories.slice(0, 8).map(cat => (
+                  <TabsTrigger key={cat} value={cat} className="text-xs px-1 py-1">
+                    {cat}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+
+              {blockCategories.map(category => (
+                <TabsContent key={category} value={category} className="mt-2">
+                  <div className="grid grid-cols-4 gap-1">
+                    {minecraftBlocks
+                      .filter(block => block.category === category)
+                      .map(block => (
+                        <button
+                          key={block.id}
+                          onClick={() => setSelectedBlock(block)}
+                          className={`w-full aspect-square rounded border-2 transition-all hover:scale-110 ${
+                            selectedBlock.id === block.id
+                              ? 'border-primary ring-2 ring-primary'
+                              : 'border-border'
+                          }`}
+                          style={{ backgroundColor: block.color }}
+                          title={block.name}
+                        />
+                      ))}
+                  </div>
+                </TabsContent>
+              ))}
+            </Tabs>
+          </div>
+        </ScrollArea>
+
+        <div className="p-3 border-t border-border space-y-2">
+          <Button className="w-full" onClick={exportToPNG}>
+            <Icon name="Download" size={16} />
+            <span className="ml-2">Экспорт PNG</span>
+          </Button>
+          <Button
+            variant="outline"
+            className="w-full"
+            onClick={() => setActiveTab(activeTab === 'editor' ? 'gallery' : 'editor')}
+          >
+            <Icon name="Images" size={16} />
+            <span className="ml-2">Галерея</span>
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex-1 p-8 overflow-auto">
+        {activeTab === 'editor' ? (
+          <div className="flex flex-col items-center justify-center min-h-full">
+            <Card className="p-4 bg-muted">
+              <canvas
+                ref={canvasRef}
+                className="pixel-canvas cursor-crosshair border border-border bg-background"
+                onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseUp}
+              />
+            </Card>
+            <div className="mt-4 text-center text-sm text-muted-foreground">
+              <p>Размер: {CANVAS_WIDTH}×{CANVAS_HEIGHT} блоков</p>
+            </div>
+          </div>
+        ) : (
+          <div className="max-w-4xl mx-auto">
+            <h2 className="text-3xl font-bold mb-6">Галерея шаблонов</h2>
+            <div className="grid grid-cols-3 gap-4">
+              {templates.map(template => (
+                <Card
+                  key={template.name}
+                  className="p-4 cursor-pointer hover:border-primary transition-colors"
+                  onClick={() => loadTemplate(template.grid)}
+                >
+                  <h3 className="font-semibold mb-2">{template.name}</h3>
+                  <div className="aspect-square bg-muted rounded flex items-center justify-center">
+                    <Icon name="Image" size={48} className="text-muted-foreground" />
+                  </div>
+                  <Button variant="outline" size="sm" className="w-full mt-3">
+                    Загрузить
+                  </Button>
+                </Card>
+              ))}
+            </div>
+
+            <Card className="p-6 mt-8">
+              <h3 className="text-xl font-semibold mb-4">📖 Справка</h3>
+              <div className="space-y-3 text-sm">
+                <div>
+                  <p className="font-medium">Инструменты:</p>
+                  <ul className="list-disc list-inside text-muted-foreground ml-2 mt-1">
+                    <li>Кисть - рисование блоков</li>
+                    <li>Ластик - удаление блоков</li>
+                    <li>Заливка - заполнение области</li>
+                  </ul>
+                </div>
+                <div>
+                  <p className="font-medium">Управление:</p>
+                  <ul className="list-disc list-inside text-muted-foreground ml-2 mt-1">
+                    <li>Клик - поставить/убрать блок</li>
+                    <li>Зажать и тянуть - рисовать линию</li>
+                    <li>Колёсико мыши - изменить зум</li>
+                  </ul>
+                </div>
+                <div>
+                  <p className="font-medium">Экспорт:</p>
+                  <p className="text-muted-foreground ml-2 mt-1">
+                    Нажмите "Экспорт PNG" для сохранения конструкции в формате PNG с прозрачным фоном
+                  </p>
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function generateHouseTemplate(): Cell[][] {
+  const template = Array(CANVAS_HEIGHT).fill(null).map(() =>
+    Array(CANVAS_WIDTH).fill(null).map(() => ({ blockId: 'air' }))
+  );
+  
+  for (let y = 25; y < 35; y++) {
+    for (let x = 20; x < 40; x++) {
+      if (y === 25 || y === 34 || x === 20 || x === 39) {
+        template[y][x] = { blockId: 'oak_planks' };
+      }
+    }
+  }
+  
+  for (let i = 0; i < 10; i++) {
+    template[24 - i][25 + i] = { blockId: 'bricks' };
+    template[24 - i][34 - i] = { blockId: 'bricks' };
+  }
+  
+  return template;
+}
+
+function generateTreeTemplate(): Cell[][] {
+  const template = Array(CANVAS_HEIGHT).fill(null).map(() =>
+    Array(CANVAS_WIDTH).fill(null).map(() => ({ blockId: 'air' }))
+  );
+  
+  for (let y = 30; y < 40; y++) {
+    template[y][32] = { blockId: 'oak_log' };
+  }
+  
+  for (let y = 22; y < 30; y++) {
+    for (let x = 28; x < 37; x++) {
+      if (Math.random() > 0.3) {
+        template[y][x] = { blockId: 'oak_log' };
+      }
+    }
+  }
+  
+  return template;
+}
+
+function generateSwordTemplate(): Cell[][] {
+  const template = Array(CANVAS_HEIGHT).fill(null).map(() =>
+    Array(CANVAS_WIDTH).fill(null).map(() => ({ blockId: 'air' }))
+  );
+  
+  for (let i = 0; i < 20; i++) {
+    template[15 + i][32] = { blockId: 'iron_block' };
+  }
+  
+  template[35][31] = { blockId: 'brown_wool' };
+  template[35][32] = { blockId: 'brown_wool' };
+  template[35][33] = { blockId: 'brown_wool' };
+  template[36][32] = { blockId: 'brown_wool' };
+  
+  return template;
+}
