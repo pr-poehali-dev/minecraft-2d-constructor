@@ -33,7 +33,11 @@ export default function MinecraftEditor() {
   const [showGrid, setShowGrid] = useState(true);
   const [activeTab, setActiveTab] = useState('editor');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const textureCache = useRef<Map<string, HTMLImageElement>>(new Map());
   const isMobile = useMediaQuery('(max-width: 768px)');
 
@@ -43,7 +47,7 @@ export default function MinecraftEditor() {
 
   useEffect(() => {
     drawCanvas();
-  }, [grid, zoom, showGrid]);
+  }, [grid, zoom, showGrid, panOffset]);
 
   useEffect(() => {
     if (isMobile) {
@@ -72,10 +76,15 @@ export default function MinecraftEditor() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    canvas.width = CANVAS_WIDTH * CELL_SIZE * zoom;
-    canvas.height = CANVAS_HEIGHT * CELL_SIZE * zoom;
+    const container = containerRef.current;
+    if (!container) return;
+
+    canvas.width = container.clientWidth;
+    canvas.height = container.clientHeight;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.translate(panOffset.x, panOffset.y);
 
     for (let y = 0; y < CANVAS_HEIGHT; y++) {
       for (let x = 0; x < CANVAS_WIDTH; x++) {
@@ -122,6 +131,8 @@ export default function MinecraftEditor() {
         ctx.stroke();
       }
     }
+    
+    ctx.restore();
   };
 
   const getCanvasCoordinates = (clientX: number, clientY: number) => {
@@ -129,8 +140,8 @@ export default function MinecraftEditor() {
     if (!canvas) return null;
 
     const rect = canvas.getBoundingClientRect();
-    const x = Math.floor((clientX - rect.left) / (CELL_SIZE * zoom));
-    const y = Math.floor((clientY - rect.top) / (CELL_SIZE * zoom));
+    const x = Math.floor((clientX - rect.left - panOffset.x) / (CELL_SIZE * zoom));
+    const y = Math.floor((clientY - rect.top - panOffset.y) / (CELL_SIZE * zoom));
     return { x, y };
   };
 
@@ -196,17 +207,31 @@ export default function MinecraftEditor() {
   };
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    setIsDrawing(true);
-    handleCanvasClick(e);
+    if (e.button === 1 || e.shiftKey || tool === 'pan') {
+      setIsPanning(true);
+      setPanStart({ x: e.clientX - panOffset.x, y: e.clientY - panOffset.y });
+      e.preventDefault();
+    } else {
+      setIsDrawing(true);
+      handleCanvasClick(e);
+    }
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (isPanning) {
+      setPanOffset({
+        x: e.clientX - panStart.x,
+        y: e.clientY - panStart.y,
+      });
+      return;
+    }
     if (!isDrawing || tool === 'fill') return;
     handleCanvasClick(e);
   };
 
   const handleMouseUp = () => {
     setIsDrawing(false);
+    setIsPanning(false);
   };
 
   const handleTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
@@ -221,6 +246,12 @@ export default function MinecraftEditor() {
 
   const handleTouchEnd = () => {
     setIsDrawing(false);
+  };
+
+  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? -0.1 : 0.1;
+    setZoom(prev => Math.max(0.25, Math.min(5, prev + delta)));
   };
 
   const clearCanvas = () => {
@@ -297,21 +328,32 @@ export default function MinecraftEditor() {
           </Button>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setZoom(Math.max(0.25, zoom - 0.25))}
+            >
+              <Icon name="ZoomOut" size={16} />
+            </Button>
+            <span className="text-sm flex-1 text-center">{Math.round(zoom * 100)}%</span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setZoom(Math.min(5, zoom + 0.25))}
+            >
+              <Icon name="ZoomIn" size={16} />
+            </Button>
+          </div>
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setZoom(Math.max(0.5, zoom - 0.25))}
+            className="w-full"
+            onClick={() => { setPanOffset({ x: 0, y: 0 }); setZoom(1); }}
           >
-            <Icon name="ZoomOut" size={16} />
-          </Button>
-          <span className="text-sm flex-1 text-center">{Math.round(zoom * 100)}%</span>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setZoom(Math.min(3, zoom + 0.25))}
-          >
-            <Icon name="ZoomIn" size={16} />
+            <Icon name="Home" size={16} />
+            <span className="ml-2">Сбросить вид</span>
           </Button>
         </div>
 
@@ -443,13 +485,17 @@ export default function MinecraftEditor() {
       )}
 
 
-      <div className="flex-1 p-2 md:p-8 overflow-auto">
+      <div className="flex-1 p-2 md:p-8 overflow-hidden">
         {activeTab === 'editor' ? (
-          <div className="flex flex-col items-center justify-center min-h-full">
-            <Card className="p-4 bg-muted">
+          <div className="flex flex-col items-center justify-center h-full">
+            <div 
+              ref={containerRef}
+              className="w-full h-full border border-border bg-muted rounded overflow-hidden relative"
+              style={{ cursor: isPanning ? 'grabbing' : 'crosshair' }}
+            >
               <canvas
                 ref={canvasRef}
-                className="pixel-canvas cursor-crosshair border border-border bg-background touch-none"
+                className="pixel-canvas touch-none w-full h-full"
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
@@ -457,10 +503,11 @@ export default function MinecraftEditor() {
                 onTouchStart={handleTouchStart}
                 onTouchMove={handleTouchMove}
                 onTouchEnd={handleTouchEnd}
+                onWheel={handleWheel}
               />
-            </Card>
+            </div>
             <div className="mt-4 text-center text-sm text-muted-foreground">
-              <p>Размер: {CANVAS_WIDTH}×{CANVAS_HEIGHT} блоков</p>
+              <p>Размер: {CANVAS_WIDTH}×{CANVAS_HEIGHT} блоков | Зум: {Math.round(zoom * 100)}% | 🖱️ Shift+ЛКМ или колёсико для навигации</p>
             </div>
           </div>
         ) : (
